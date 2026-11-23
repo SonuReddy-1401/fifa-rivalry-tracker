@@ -71,7 +71,7 @@ def read_pair(prompt, optional=False):
             print("Enter two whole numbers like 2-1.")
 
 
-def record_match(db, players):
+def read_result(players):
     print(f"Score order: {players[0]} - {players[1]}")
     goals = read_pair("Match score (excluding penalties): ")
     penalties = None
@@ -83,10 +83,51 @@ def record_match(db, players):
                 break
             except ValueError as error:
                 print(error)
+    return (*goals, *(penalties or (None, None)))
+
+
+def format_result(players, result):
+    first, second, pens_first, pens_second = result
+    score = f"{players[0]} {first}-{second} {players[1]}"
+    if pens_first is not None:
+        score += f" ({pens_first}-{pens_second} on pens)"
+    return score
+
+
+def record_match(db, players):
+    result = read_result(players)
     with db:
-        db.execute("INSERT INTO matches (g1, g2, p1, p2) VALUES (?, ?, ?, ?)",
-                   (*goals, *(penalties or (None, None))))
+        db.execute("INSERT INTO matches (g1, g2, p1, p2) VALUES (?, ?, ?, ?)", result)
     print("Match saved.")
+
+
+def correct_match(db, players):
+    match_id = input("Match ID from history (Enter to cancel): ").strip()
+    if not match_id:
+        return
+    original = db.execute(
+        "SELECT g1, g2, p1, p2 FROM matches WHERE id = ?", (match_id,)
+    ).fetchone()
+    if original is None:
+        print("Match ID not found. Choose Match history to see available IDs.")
+        return
+
+    print(f"Current #{match_id}: {format_result(players, original)}")
+    updated = read_result(players)
+    print(f"Proposed #{match_id}: {format_result(players, updated)}")
+    if input("Save correction? [y/N] ").strip().lower() not in {"y", "yes"}:
+        print("Correction cancelled.")
+        return
+
+    with db:
+        changed = db.execute("""
+            UPDATE matches SET g1 = ?, g2 = ?, p1 = ?, p2 = ?
+            WHERE id = ? AND g1 = ? AND g2 = ? AND p1 IS ? AND p2 IS ?
+        """, (*updated, match_id, *original))
+    if changed.rowcount:
+        print("Correction saved.")
+    else:
+        print("The match changed during editing. Check its latest result and try again.")
 
 
 def main():
@@ -101,27 +142,28 @@ def main():
         print("FIFA Rivalry Tracker")
         players = load_players(db)
         while True:
-            print("\n1. Record a match\n2. Match history\n3. Rivalry stats\n4. Quit")
+            print("\n1. Record a match\n2. Match history\n3. Rivalry stats\n4. Quit\n5. Correct a result")
             choice = input("Choose an option: ").strip()
             if choice == "4":
                 return
             if choice == "1":
                 record_match(db, players)
+            elif choice == "5":
+                correct_match(db, players)
             elif choice in {"2", "3"}:
-                rows = db.execute("SELECT g1, g2, p1, p2 FROM matches ORDER BY id DESC")
-                matches = [(row[:2], None if row[2] is None else row[2:]) for row in rows]
-                if not matches:
+                rows = db.execute("SELECT id, g1, g2, p1, p2 FROM matches ORDER BY id DESC").fetchall()
+                if not rows:
                     print("No matches recorded yet.")
                 elif choice == "2":
-                    for goals, pens in matches:
-                        suffix = f" ({pens[0]}-{pens[1]} on pens)" if pens else ""
-                        print(f"{players[0]} {goals[0]}-{goals[1]} {players[1]}{suffix}")
+                    for match_id, *result in rows:
+                        print(f"#{match_id}: {format_result(players, result)}")
                 else:
+                    matches = [(row[1:3], None if row[3] is None else row[3:]) for row in rows]
                     for name, stats in summarize_rivalry(players, matches).items():
                         print(f"{name}: {stats['wins']} W, {stats['draws']} D, "
                               f"{stats['losses']} L, {stats['goals']} goals")
             else:
-                print("Choose 1, 2, 3, or 4.")
+                print("Choose an option from 1 to 5.")
 
 
 if __name__ == "__main__":

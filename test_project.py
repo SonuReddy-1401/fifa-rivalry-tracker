@@ -41,3 +41,27 @@ def test_reopen_rivalry(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert output.index("Alex 2-2 Sam (5-4 on pens)") < output.index("Alex 2-1 Sam")
     assert "Alex: 2 W, 0 D, 0 L, 4 goals" in output
+
+
+@pytest.mark.parametrize("edit,expected_first,expected_stats", [
+    (["1", "1-3", "y"], "Alex 1-3 Sam", "Alex: 0 W, 1 D, 1 L, 1 goals"),
+    (["1", "1-3", ""], "Alex 2-2 Sam (5-4 on pens)", "Alex: 1 W, 1 D, 0 L, 2 goals"),
+    (["99"], "Alex 2-2 Sam (5-4 on pens)", "Alex: 1 W, 1 D, 0 L, 2 goals"),
+])
+def test_correct_match(tmp_path, monkeypatch, capsys, edit, expected_first, expected_stats):
+    monkeypatch.setattr(project, "DATABASE", tmp_path / "matches.sqlite3")
+    answers = iter(["Alex", "Sam", "1", "2-2", "5-4", "1", "0-0", "", "5", *edit, "4"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    project.main()
+    messages = capsys.readouterr().out
+    if edit == ["99"]:
+        assert "Match ID not found" in messages
+    else:
+        assert "Current #1: Alex 2-2 Sam (5-4 on pens)" in messages
+        assert "Proposed #1: Alex 1-3 Sam" in messages
+
+    answers = iter(["2", "3", "4"])
+    project.main()
+    output = capsys.readouterr().out
+    assert f"#2: Alex 0-0 Sam\n#1: {expected_first}\n" in output
+    assert expected_stats in output
