@@ -29,9 +29,23 @@ def test_get_winner(goals, pens, winner):
 def test_summarize_rivalry():
     matches = [((2, 2), (5, 4)), ((1, 3), None), ((0, 0), None)]
     assert summarize_rivalry(PLAYERS, matches) == {
-        "Alex": dict(wins=1, draws=1, losses=1, goals=3),
-        "Sam": dict(wins=1, draws=1, losses=1, goals=5),
+        "Alex": dict(wins=1, draws=1, losses=1, goals=3, form="WLD", streak=0),
+        "Sam": dict(wins=1, draws=1, losses=1, goals=5, form="LWD", streak=0),
     }
+
+
+def test_form_window_and_winning_streak():
+    wins = [((0, 1), None)] * 6
+    shootout = ((2, 2), (4, 5))
+    stats = summarize_rivalry(PLAYERS, wins + [shootout])
+    assert stats["Sam"]["form"] == "WWWWW"
+    assert stats["Sam"]["streak"] == 7
+    assert stats["Alex"]["streak"] == 0
+
+    stats = summarize_rivalry(PLAYERS, wins + [((0, 0), None), shootout])
+    assert stats["Sam"]["form"] == "WWWDW"
+    assert stats["Sam"]["streak"] == 1
+    assert stats["Alex"]["form"] == "LLLDL"
 
 
 def test_reopen_rivalry(tmp_path, monkeypatch, capsys):
@@ -68,6 +82,8 @@ def test_correct_match(tmp_path, monkeypatch, capsys, edit, expected_first, expe
     output = capsys.readouterr().out
     assert f"#2: Alex 0-0 Sam\n#1: {expected_first}\n" in output
     assert expected_stats in output
+    alex_form = "L D" if edit[-1] == "y" else "W D"
+    assert f"{expected_stats}\n  Last five (oldest first): {alex_form}\n  Current winning streak: 0" in output
 
 
 def test_upgrade_and_switch_rivalries(tmp_path, monkeypatch, capsys):

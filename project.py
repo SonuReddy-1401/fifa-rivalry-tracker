@@ -27,7 +27,9 @@ def get_winner(players, goals, penalties=None):
 
 
 def summarize_rivalry(players, matches):
-    stats = {name: dict(wins=0, draws=0, losses=0, goals=0) for name in players}
+    """Summarize matches in recording order, oldest first."""
+    stats = {name: dict(wins=0, draws=0, losses=0, goals=0, form="", streak=0)
+             for name in players}
     for goals, penalties in matches:
         winner = get_winner(players, goals, penalties)
         for name, scored in zip(players, goals):
@@ -37,8 +39,11 @@ def summarize_rivalry(players, matches):
                 result = "wins"
             else:
                 result = "losses"
-            stats[name][result] += 1
-            stats[name]["goals"] += scored
+            player = stats[name]
+            player[result] += 1
+            player["goals"] += scored
+            player["form"] = (player["form"] + result[0].upper())[-5:]
+            player["streak"] = player["streak"] + 1 if winner == name else 0
     return stats
 
 
@@ -205,10 +210,13 @@ def main():
                     for match_id, *result in rows:
                         print(f"#{match_id}: {format_result(players, result)}")
                 else:
-                    matches = [(row[1:3], None if row[3] is None else row[3:]) for row in rows]
+                    matches = ((row[1:3], None if row[3] is None else row[3:])
+                               for row in reversed(rows))
                     for name, stats in summarize_rivalry(players, matches).items():
                         print(f"{name}: {stats['wins']} W, {stats['draws']} D, "
                               f"{stats['losses']} L, {stats['goals']} goals")
+                        print(f"  Last five (oldest first): {' '.join(stats['form'])}")
+                        print(f"  Current winning streak: {stats['streak']}")
             else:
                 print("Choose an option from 1 to 6.")
 
