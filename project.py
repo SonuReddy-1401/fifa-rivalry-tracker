@@ -1,6 +1,8 @@
+import csv
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 
 DATABASE = Path(__file__).with_name("rivalry.sqlite3")
@@ -182,6 +184,31 @@ def correct_match(db, rivalry_id, players):
         print("The match changed during editing. Check its latest result and try again.")
 
 
+def export_history(rivalry_id, players, rows):
+    """Write a separate CSV snapshot each time, in the history display order."""
+    folder = DATABASE.parent / "exports"
+    folder.mkdir(exist_ok=True)
+    with NamedTemporaryFile(mode="w", encoding="utf-8-sig", newline="", dir=folder,
+                           prefix=f"rivalry-{rivalry_id}-", suffix=".csv",
+                           delete=False) as output:
+        path = Path(output.name)
+        try:
+            writer = csv.writer(output)
+            writer.writerow(("match_id", "player_1", "player_2", "goals_1", "goals_2",
+                             "penalties_1", "penalties_2", "outcome_for_player_1"))
+            for match_id, g1, g2, p1, p2 in rows:
+                winner = get_winner(players, (g1, g2), None if p1 is None else (p1, p2))
+                outcomes = {None: "draw", players[0]: "win", players[1]: "loss"}
+                outcome = outcomes[winner]
+                writer.writerow((match_id, *players, g1, g2, p1, p2, outcome))
+            output.flush()
+        except BaseException:
+            output.close()
+            path.unlink(missing_ok=True)
+            raise
+    return path
+
+
 def main():
     with closing(sqlite3.connect(DATABASE)) as db:
         prepare_database(db)
@@ -192,6 +219,7 @@ def main():
             print(f"\nRivalry: {players[0]} vs {players[1]}")
             print("\n1. Record a match\n2. Match history\n3. Rivalry stats\n4. Quit\n5. Correct a result")
             print("6. Switch or create a rivalry")
+            print("7. Export match history to CSV")
             choice = input("Choose an option: ").strip()
             if choice == "4":
                 return
@@ -201,11 +229,17 @@ def main():
                 correct_match(db, rivalry_id, players)
             elif choice == "6":
                 rivalry = choose_rivalry(db, rivalry)
-            elif choice in {"2", "3"}:
+            elif choice in {"2", "3", "7"}:
                 rows = db.execute("""SELECT id, g1, g2, p1, p2 FROM matches
                     WHERE rivalry_id = ? ORDER BY id DESC""", (rivalry_id,)).fetchall()
                 if not rows:
                     print("No matches recorded yet.")
+                elif choice == "7":
+                    try:
+                        path = export_history(rivalry_id, players, rows)
+                        print(f"Exported {len(rows)} match(es) to {path}")
+                    except OSError as error:
+                        print(f"Could not export match history: {error}")
                 elif choice == "2":
                     for match_id, *result in rows:
                         print(f"#{match_id}: {format_result(players, result)}")
@@ -218,7 +252,7 @@ def main():
                         print(f"  Last five (oldest first): {' '.join(stats['form'])}")
                         print(f"  Current winning streak: {stats['streak']}")
             else:
-                print("Choose an option from 1 to 6.")
+                print("Choose an option from 1 to 7.")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import csv
 import sqlite3
 from contextlib import closing
 
@@ -118,3 +119,27 @@ def test_upgrade_and_switch_rivalries(tmp_path, monkeypatch, capsys):
     with closing(sqlite3.connect(database)) as db:
         assert db.execute("SELECT count(*) FROM rivalry").fetchone() == (2,)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_export_journey(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(project, "DATABASE", tmp_path / "matches.sqlite3")
+    first = 'José, "Junior"'
+    answers = iter([
+        first, "Sam", "7", "1", "3-1", "1", "0-0", "",
+        "5", "1", "2-2", "4-5", "y", "6", "n", first, "Jo", "1", "9-0",
+        "6", "1", "2", "3", "7", "4",
+    ])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    project.main()
+    screen = capsys.readouterr().out
+    assert "No matches recorded yet." in screen
+    assert f"#1: {first} 2-2 Sam (4-5 on pens)" in screen
+    assert f"{first}: 0 W, 1 D, 1 L, 2 goals" in screen
+    path, = (tmp_path / "exports").glob("*.csv")
+    with path.open(encoding="utf-8-sig", newline="") as exported:
+        assert list(csv.reader(exported)) == [
+            ["match_id", "player_1", "player_2", "goals_1", "goals_2",
+             "penalties_1", "penalties_2", "outcome_for_player_1"],
+            ["2", first, "Sam", "0", "0", "", "", "draw"],
+            ["1", first, "Sam", "2", "2", "4", "5", "loss"],
+        ]
