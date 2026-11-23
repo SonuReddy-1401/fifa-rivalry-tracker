@@ -1,3 +1,6 @@
+import sqlite3
+from contextlib import closing
+
 import pytest
 
 import project
@@ -65,3 +68,37 @@ def test_correct_match(tmp_path, monkeypatch, capsys, edit, expected_first, expe
     output = capsys.readouterr().out
     assert f"#2: Alex 0-0 Sam\n#1: {expected_first}\n" in output
     assert expected_stats in output
+
+
+def test_upgrade_and_switch_rivalries(tmp_path, monkeypatch, capsys):
+    database = tmp_path / "legacy.sqlite3"
+    monkeypatch.setattr(project, "DATABASE", database)
+    with closing(sqlite3.connect(database)) as db:
+        db.executescript("""
+            CREATE TABLE rivalry (id INTEGER PRIMARY KEY, first TEXT, second TEXT);
+            CREATE TABLE matches (id INTEGER PRIMARY KEY, g1 INTEGER, g2 INTEGER, p1 INTEGER, p2 INTEGER);
+            INSERT INTO rivalry VALUES (1, 'Alex', 'Sam');
+            INSERT INTO matches VALUES (12, 2, 2, 5, 4);
+        """)
+
+    def run(*commands):
+        answers = iter(commands)
+        monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+        project.main()
+        return capsys.readouterr().out
+
+    second = run("6", "n", "Alex", "Jo", "2", "5", "12", "1", "0-3", "2", "3", "4")
+    assert "No matches recorded yet." in second
+    assert "Match ID not found" in second
+    assert "#13: Alex 0-3 Jo" in second
+    assert "#12:" not in second
+    assert "Alex: 0 W, 0 D, 1 L, 0 goals" in second
+
+    first = run("2", "6", "n", "sam", "ALEX", "2", "3", "4")
+    assert "Opening the existing rivalry" in first
+    assert "#12: Alex 2-2 Sam (5-4 on pens)" in first
+    assert "#13:" not in first
+    assert "Alex: 1 W, 0 D, 0 L, 2 goals" in first
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute("SELECT count(*) FROM rivalry").fetchone() == (2,)
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []

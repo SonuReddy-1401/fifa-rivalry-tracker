@@ -42,18 +42,64 @@ def summarize_rivalry(players, matches):
     return stats
 
 
-def load_players(db):
-    row = db.execute("SELECT first, second FROM rivalry WHERE id = 1").fetchone()
-    if row:
-        return row
+def prepare_database(db):
+    db.execute("PRAGMA foreign_keys = ON")
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("""CREATE TABLE IF NOT EXISTS rivalry
+            (id INTEGER PRIMARY KEY, first TEXT NOT NULL, second TEXT NOT NULL)""")
+        columns = {row[1] for row in db.execute("PRAGMA table_info(matches)")}
+        legacy = bool(columns) and "rivalry_id" not in columns
+        if legacy:
+            db.execute("ALTER TABLE matches RENAME TO legacy_matches")
+        db.execute("""CREATE TABLE IF NOT EXISTS matches
+            (id INTEGER PRIMARY KEY, rivalry_id INTEGER NOT NULL REFERENCES rivalry(id),
+             g1 INTEGER NOT NULL, g2 INTEGER NOT NULL, p1 INTEGER, p2 INTEGER)""")
+        if legacy:
+            # Earlier versions stored all results for the single rivalry with ID 1.
+            db.execute("""INSERT INTO matches (id, rivalry_id, g1, g2, p1, p2)
+                SELECT id, 1, g1, g2, p1, p2 FROM legacy_matches""")
+            db.execute("DROP TABLE legacy_matches")
+        db.execute("CREATE INDEX IF NOT EXISTS matches_by_rivalry ON matches(rivalry_id, id)")
+
+
+def create_rivalry(db):
     while True:
         first = input("First player's name: ").strip()
         second = input("Second player's name: ").strip()
         if first and second and first.casefold() != second.casefold():
-            with db:
-                db.execute("INSERT OR IGNORE INTO rivalry VALUES (1, ?, ?)", (first, second))
-            return db.execute("SELECT first, second FROM rivalry WHERE id = 1").fetchone()
+            break
         print("Use two distinct, nonempty player names.")
+    pair = {first.casefold(), second.casefold()}
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        for rivalry in db.execute("SELECT id, first, second FROM rivalry"):
+            if {rivalry[1].casefold(), rivalry[2].casefold()} == pair:
+                print("Opening the existing rivalry for these players.")
+                return rivalry
+        saved = db.execute("INSERT INTO rivalry (first, second) VALUES (?, ?)", (first, second))
+        return saved.lastrowid, first, second
+
+
+def choose_rivalry(db, current=None):
+    rivalries = db.execute("SELECT id, first, second FROM rivalry ORDER BY id").fetchall()
+    if not rivalries:
+        return create_rivalry(db)
+    if current is None and len(rivalries) == 1:
+        return rivalries[0]
+    for rivalry_id, first, second in rivalries:
+        print(f"{rivalry_id}. {first} vs {second}")
+    default = current or rivalries[0]
+    while True:
+        choice = input(f"Rivalry ID, N for new, or Enter for #{default[0]}: ").strip()
+        if not choice:
+            return default
+        if choice.lower() == "n":
+            return create_rivalry(db)
+        for rivalry in rivalries:
+            if choice == str(rivalry[0]):
+                return rivalry
+        print("Choose a listed rivalry ID or N.")
 
 
 def read_pair(prompt, optional=False):
@@ -94,19 +140,20 @@ def format_result(players, result):
     return score
 
 
-def record_match(db, players):
+def record_match(db, rivalry_id, players):
     result = read_result(players)
     with db:
-        db.execute("INSERT INTO matches (g1, g2, p1, p2) VALUES (?, ?, ?, ?)", result)
+        db.execute("INSERT INTO matches (rivalry_id, g1, g2, p1, p2) VALUES (?, ?, ?, ?, ?)",
+                   (rivalry_id, *result))
     print("Match saved.")
 
 
-def correct_match(db, players):
+def correct_match(db, rivalry_id, players):
     match_id = input("Match ID from history (Enter to cancel): ").strip()
     if not match_id:
         return
     original = db.execute(
-        "SELECT g1, g2, p1, p2 FROM matches WHERE id = ?", (match_id,)
+        "SELECT g1, g2, p1, p2 FROM matches WHERE id = ? AND rivalry_id = ?", (match_id, rivalry_id)
     ).fetchone()
     if original is None:
         print("Match ID not found. Choose Match history to see available IDs.")
@@ -122,8 +169,8 @@ def correct_match(db, players):
     with db:
         changed = db.execute("""
             UPDATE matches SET g1 = ?, g2 = ?, p1 = ?, p2 = ?
-            WHERE id = ? AND g1 = ? AND g2 = ? AND p1 IS ? AND p2 IS ?
-        """, (*updated, match_id, *original))
+            WHERE id = ? AND rivalry_id = ? AND g1 = ? AND g2 = ? AND p1 IS ? AND p2 IS ?
+        """, (*updated, match_id, rivalry_id, *original))
     if changed.rowcount:
         print("Correction saved.")
     else:
@@ -132,26 +179,26 @@ def correct_match(db, players):
 
 def main():
     with closing(sqlite3.connect(DATABASE)) as db:
-        db.executescript("""
-            CREATE TABLE IF NOT EXISTS rivalry
-                (id INTEGER PRIMARY KEY, first TEXT NOT NULL, second TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS matches
-                (id INTEGER PRIMARY KEY, g1 INTEGER NOT NULL, g2 INTEGER NOT NULL,
-                 p1 INTEGER, p2 INTEGER);
-        """)
+        prepare_database(db)
         print("FIFA Rivalry Tracker")
-        players = load_players(db)
+        rivalry = choose_rivalry(db)
         while True:
+            rivalry_id, *players = rivalry
+            print(f"\nRivalry: {players[0]} vs {players[1]}")
             print("\n1. Record a match\n2. Match history\n3. Rivalry stats\n4. Quit\n5. Correct a result")
+            print("6. Switch or create a rivalry")
             choice = input("Choose an option: ").strip()
             if choice == "4":
                 return
             if choice == "1":
-                record_match(db, players)
+                record_match(db, rivalry_id, players)
             elif choice == "5":
-                correct_match(db, players)
+                correct_match(db, rivalry_id, players)
+            elif choice == "6":
+                rivalry = choose_rivalry(db, rivalry)
             elif choice in {"2", "3"}:
-                rows = db.execute("SELECT id, g1, g2, p1, p2 FROM matches ORDER BY id DESC").fetchall()
+                rows = db.execute("""SELECT id, g1, g2, p1, p2 FROM matches
+                    WHERE rivalry_id = ? ORDER BY id DESC""", (rivalry_id,)).fetchall()
                 if not rows:
                     print("No matches recorded yet.")
                 elif choice == "2":
@@ -163,7 +210,7 @@ def main():
                         print(f"{name}: {stats['wins']} W, {stats['draws']} D, "
                               f"{stats['losses']} L, {stats['goals']} goals")
             else:
-                print("Choose an option from 1 to 5.")
+                print("Choose an option from 1 to 6.")
 
 
 if __name__ == "__main__":
